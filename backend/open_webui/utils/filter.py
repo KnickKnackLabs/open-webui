@@ -106,6 +106,16 @@ async def get_filter_functions(request, model: dict, enabled_filter_ids: list = 
     return filter_functions
 
 
+async def filter_functions_handle_files(request, filter_functions) -> bool:
+    for function in filter_functions:
+        if not function:
+            continue
+        function_module = await get_function_module(request, function.id, function=function)
+        if getattr(function_module, 'inlet', None) and getattr(function_module, 'file_handler', False):
+            return True
+    return False
+
+
 async def apply_filter_valves(function_module, filter_context, valves_by_id, filter_ids, filter_id):
     if not (hasattr(function_module, 'valves') and hasattr(function_module, 'Valves')):
         return valves_by_id

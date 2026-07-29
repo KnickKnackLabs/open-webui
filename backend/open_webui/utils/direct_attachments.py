@@ -128,3 +128,19 @@ async def hydrate_direct_attachments(messages: list[dict], contexts: list[dict],
             )
 
     return messages
+
+
+async def hydrate_direct_attachments_for_compaction(
+    messages: list[dict],
+    user,
+    *,
+    file_handler_owns_attachments: bool,
+) -> list[dict]:
+    if file_handler_owns_attachments:
+        return messages
+
+    contexts = collect_direct_attachment_contexts(messages)
+    if not contexts:
+        return messages
+
+    return await hydrate_direct_attachments(messages, contexts, user)

@@ -84,8 +84,7 @@ from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import compact_messages_for_request
 from open_webui.utils.direct_attachments import (
-    collect_direct_attachment_contexts,
-    hydrate_direct_attachments,
+    hydrate_direct_attachments_for_compaction,
     is_direct_attachment,
 )
 from open_webui.utils.files import (
@@ -96,6 +95,7 @@ from open_webui.utils.files import (
 )
 from open_webui.utils.filter import (
     FilterContext,
+    filter_functions_handle_files,
     get_filter_functions,
     process_filter_functions,
 )
@@ -2297,6 +2297,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Guided regeneration: extract before it reaches the LLM provider
     regeneration_prompt = form_data.pop('regeneration_prompt', None)
 
+    filter_functions = []
+    file_handler_owns_attachments = False
+    if ENABLE_PLUGINS:
+        try:
+            filter_functions = await get_filter_functions(request, model, metadata.get('filter_ids', []))
+            file_handler_owns_attachments = await filter_functions_handle_files(request, filter_functions)
+        except Exception as e:
+            raise Exception(f'{e}')
+
     # Load messages from DB when available — DB preserves structured 'output' items
     # which the frontend strips, causing tool calls to be merged into content.
     chat_id = metadata.get('chat_id')
@@ -2343,6 +2352,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                                 if f.get('url')
                             ],
                         ]
+
+    # Compaction must see direct attachment text so it can budget and summarize
+    # the real provider context. A Filter file handler owns this path instead,
+    # so its attachments remain untouched and can be removed by the inlet.
+    form_data['messages'] = await hydrate_direct_attachments_for_compaction(
+        form_data.get('messages', []),
+        user,
+        file_handler_owns_attachments=file_handler_owns_attachments,
+    )
 
     if regeneration_prompt:
         form_data['messages'].append({'role': 'user', 'content': regeneration_prompt})
@@ -2515,8 +2533,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if ENABLE_PLUGINS:
         try:
-            filter_functions = await get_filter_functions(request, model, metadata.get('filter_ids', []))
-
             form_data, flags = await process_filter_functions(
                 request=request,
                 filter_context=None,
@@ -2527,14 +2543,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
         except Exception as e:
             raise Exception(f'{e}')
-
-    direct_attachment_contexts = collect_direct_attachment_contexts(form_data.get('messages', []))
-    if direct_attachment_contexts:
-        form_data['messages'] = await hydrate_direct_attachments(
-            form_data['messages'],
-            direct_attachment_contexts,
-            user,
-        )
 
     for message in form_data.get('messages', []):
         message.pop('files', None)
