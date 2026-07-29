@@ -758,6 +758,7 @@
 		}
 
 		const tempItemId = uuidv4();
+		const directAttachment = !file.type.startsWith('image/') && !file.type.startsWith('video/');
 		const fileItem = {
 			type: 'file',
 			file: '',
@@ -769,9 +770,7 @@
 			size: file.size,
 			error: '',
 			itemId: tempItemId,
-			// Stamp the user's default upload mode so the sent payload carries it;
-			// the per-file toggle in FileItemModal can still override it afterwards.
-			...($settings?.defaultUploadContext === 'full' ? { context: 'full' } : {}),
+			...(directAttachment ? { purpose: 'chat_attachment' } : {}),
 			...itemData
 		};
 
@@ -785,12 +784,15 @@
 		if (!$temporaryChatEnabled) {
 			try {
 				// If the file is an audio file, provide the language for STT.
-				let metadata = null;
+				let metadata: { purpose?: string; language?: string } | null = directAttachment
+					? { purpose: 'chat_attachment' }
+					: null;
 				if (
 					(file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
 					$settings?.audio?.stt?.language
 				) {
 					metadata = {
+						...(metadata ?? {}),
 						language: $settings?.audio?.stt?.language
 					};
 				}
@@ -808,6 +810,10 @@
 					if (uploadedFile.error) {
 						console.warn('File upload warning:', uploadedFile.error);
 						toast.warning(uploadedFile.error);
+						if (directAttachment) {
+							files = files.filter((item) => item?.itemId !== tempItemId);
+							return null;
+						}
 					}
 
 					fileItem.status = 'uploaded';
@@ -1887,7 +1893,7 @@
 																				}
 																			);
 
-																			await uploadFileHandler(file, true, { context: 'full' });
+																			await uploadFileHandler(file);
 																		}
 																	}
 																} else {

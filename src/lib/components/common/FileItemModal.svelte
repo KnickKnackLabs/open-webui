@@ -346,7 +346,7 @@
 						{/if}
 					</div>
 
-					{#if edit}
+					{#if edit && item?.purpose !== 'chat_attachment'}
 						<div class=" self-end">
 							<Tooltip
 								content={enableFullContent

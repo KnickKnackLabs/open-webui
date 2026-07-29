@@ -83,6 +83,10 @@ from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.chat_id import is_saved_chat_id
 from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.context_compaction import compact_messages_for_request
+from open_webui.utils.direct_attachments import (
+    collect_direct_attachment_contexts,
+    hydrate_direct_attachments,
+)
 from open_webui.utils.files import (
     convert_markdown_base64_images,
     get_file_url_from_base64,
@@ -2338,8 +2342,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                                 if f.get('url')
                             ],
                         ]
-                # Strip files field — it's been incorporated into content
-                message.pop('files', None)
 
     if regeneration_prompt:
         form_data['messages'].append({'role': 'user', 'content': regeneration_prompt})
@@ -2524,6 +2526,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
         except Exception as e:
             raise Exception(f'{e}')
+
+    direct_attachment_contexts = collect_direct_attachment_contexts(form_data.get('messages', []))
+    if direct_attachment_contexts:
+        form_data['messages'] = await hydrate_direct_attachments(
+            form_data['messages'],
+            direct_attachment_contexts,
+            user,
+        )
+
+    for message in form_data.get('messages', []):
+        message.pop('files', None)
 
     features = form_data.pop('features', None) or {}
     extra_params['__features__'] = features

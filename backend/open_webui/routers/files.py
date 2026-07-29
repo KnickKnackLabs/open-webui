@@ -45,6 +45,7 @@ from open_webui.routers.audio import transcribe
 from open_webui.routers.retrieval import ProcessFileForm, process_file
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.direct_attachments import DIRECT_ATTACHMENT_PURPOSE
 from open_webui.utils.misc import strict_match_mime_type
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -125,6 +126,10 @@ def _media_supported_for_extraction(
     return bool(content_extraction_engine and _matches_configured_mime_type(supported, content_type))
 
 
+def _is_direct_attachment_upload(file_metadata: dict) -> bool:
+    return file_metadata.get('purpose') == DIRECT_ATTACHMENT_PURPOSE and not file_metadata.get('knowledge_id')
+
+
 async def process_uploaded_file(
     request,
     file,
@@ -137,6 +142,7 @@ async def process_uploaded_file(
     async def _process_handler(db_session):
         try:
             content_type = file.content_type
+            extract_only = _is_direct_attachment_upload(file_metadata)
 
             # Detect mis-labeled text files (e.g. .ts → video/mp2t)
             if content_type and content_type.startswith(('image/', 'video/')):
@@ -160,7 +166,11 @@ async def process_uploaded_file(
                 )
                 await process_file(
                     request,
-                    ProcessFileForm(file_id=file_item.id, content=result.get('text', '')),
+                    ProcessFileForm(
+                        file_id=file_item.id,
+                        content=result.get('text', ''),
+                        extract_only=extract_only,
+                    ),
                     user=user,
                     db=db_session,
                 )
@@ -193,7 +203,7 @@ async def process_uploaded_file(
                     log.info(f'File type {file.content_type} is not provided, but trying to process anyway')
                 await process_file(
                     request,
-                    ProcessFileForm(file_id=file_item.id),
+                    ProcessFileForm(file_id=file_item.id, extract_only=extract_only),
                     user=user,
                     db=db_session,
                 )
