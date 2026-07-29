@@ -1490,13 +1490,21 @@
 				throw new Error('Created file is empty');
 			}
 
+			const directAttachment = !file.type.startsWith('image/') && !file.type.startsWith('video/');
+			if (directAttachment) {
+				Object.assign(fileItem, { purpose: 'chat_attachment' });
+			}
+
 			// If the file is an audio file, provide the language for STT.
-			let metadata = null;
+			let metadata: { purpose?: string; language?: string } | null = directAttachment
+				? { purpose: 'chat_attachment' }
+				: null;
 			if (
 				(file.type.startsWith('audio/') || file.type.startsWith('video/')) &&
 				$settings?.audio?.stt?.language
 			) {
 				metadata = {
+					...(metadata ?? {}),
 					language: $settings?.audio?.stt?.language
 				};
 			}
@@ -1507,6 +1515,9 @@
 
 			if (!uploadedFile) {
 				throw new Error('Server returned null response for file upload');
+			}
+			if (directAttachment && uploadedFile.error) {
+				throw new Error(uploadedFile.error);
 			}
 
 			console.log('File uploaded successfully:', uploadedFile);
@@ -2490,16 +2501,20 @@
 	// Chat functions
 	//////////////////////////
 
+	const isDirectAttachment = (item: any) =>
+		item?.purpose === 'chat_attachment' &&
+		item?.type !== 'image' &&
+		!(item?.content_type ?? '').startsWith('image/');
+
+	const isRetrievalSource = (item: any) =>
+		!isDirectAttachment(item) &&
+		(['doc', 'text', 'note', 'chat', 'folder', 'collection'].includes(item.type) ||
+			(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/')));
+
 	const submitPrompt = async (inputContent, inputFiles) => {
 		const _files = structuredClone(inputFiles);
 
-		chatFiles.push(
-			..._files.filter(
-				(item) =>
-					['doc', 'text', 'note', 'chat', 'folder', 'collection'].includes(item.type) ||
-					(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/'))
-			)
-		);
+		chatFiles.push(..._files.filter(isRetrievalSource));
 		chatFiles = chatFiles.filter(
 			// Remove duplicates
 			(item, index, array) => array.findIndex((i) => equal(i, item)) === index
@@ -3001,13 +3016,7 @@
 		});
 
 		let files = structuredClone(chatFiles);
-		files.push(
-			...(userMessage?.files ?? []).filter(
-				(item) =>
-					['doc', 'text', 'note', 'chat', 'collection', 'folder'].includes(item.type) ||
-					(item.type === 'file' && !(item?.content_type ?? '').startsWith('image/'))
-			)
-		);
+		files.push(...(userMessage?.files ?? []).filter(isRetrievalSource));
 		// Remove duplicates
 		files = files.filter((item, index, array) => array.findIndex((i) => equal(i, item)) === index);
 
@@ -3058,6 +3067,7 @@
 					const imageFiles = (message?.files ?? []).filter(
 						(file) => file.type === 'image' || (file?.content_type ?? '').startsWith('image/')
 					);
+					const directAttachments = (message?.files ?? []).filter(isDirectAttachment);
 
 					if (message.output && message.role === 'assistant') {
 						return { role: message.role, output: message.output };
@@ -3077,13 +3087,15 @@
 										url: file.url
 									}
 								}))
-							]
+							],
+							...(directAttachments.length > 0 ? { files: directAttachments } : {})
 						};
 					}
 
 					return {
 						role: message.role,
-						content: message?.merged?.content ?? message.content
+						content: message?.merged?.content ?? message.content,
+						...(directAttachments.length > 0 ? { files: directAttachments } : {})
 					};
 				})
 				.filter(

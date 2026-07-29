@@ -3,6 +3,7 @@ import logging
 
 from open_webui.env import ENABLE_PLUGINS
 from open_webui.models.functions import Functions
+from open_webui.utils.direct_attachments import clear_direct_attachment_contexts
 from open_webui.utils.plugin import get_function_module_from_cache
 
 log = logging.getLogger(__name__)
@@ -103,6 +104,16 @@ async def get_sorted_filter_ids(request, model: dict, enabled_filter_ids: list =
 async def get_filter_functions(request, model: dict, enabled_filter_ids: list = None):
     _, filter_functions = await resolve_filter_pipeline(request, model, enabled_filter_ids)
     return filter_functions
+
+
+async def filter_functions_handle_files(request, filter_functions) -> bool:
+    for function in filter_functions:
+        if not function:
+            continue
+        function_module = await get_function_module(request, function.id, function=function)
+        if getattr(function_module, 'inlet', None) and getattr(function_module, 'file_handler', False):
+            return True
+    return False
 
 
 async def apply_filter_valves(function_module, filter_context, valves_by_id, filter_ids, filter_id):
@@ -231,5 +242,6 @@ async def process_filter_functions(
             del form_data['metadata']['files']
         if 'files' in form_data:
             del form_data['files']
+        clear_direct_attachment_contexts(form_data)
 
     return form_data, {}

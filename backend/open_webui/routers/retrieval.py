@@ -1831,6 +1831,7 @@ class ProcessFileForm(BaseModel):
     file_id: str
     content: str | None = None
     collection_name: str | None = None
+    extract_only: bool = False
 
 
 @router.post('/process/file')
@@ -1846,7 +1847,6 @@ async def process_file(
     Note: granular session management is used to prevent connection pool exhaustion.
     The session is committed before external API calls, and updates use a fresh session.
     """
-    config = await get_retrieval_config()
     if user.role == 'admin':
         file = await Files.get_file_by_id(form_data.file_id, db=db)
     else:
@@ -1865,12 +1865,13 @@ async def process_file(
                 # Update the content in the file
                 # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
 
-                try:
-                    # /files/{file_id}/data/content/update
-                    await ASYNC_VECTOR_DB_CLIENT.delete_collection(collection_name=f'file-{file.id}')
-                except Exception:
-                    # Audio file upload pipeline
-                    pass
+                if not form_data.extract_only:
+                    try:
+                        # /files/{file_id}/data/content/update
+                        await ASYNC_VECTOR_DB_CLIENT.delete_collection(collection_name=f'file-{file.id}')
+                    except Exception:
+                        # Audio file upload pipeline
+                        pass
 
                 docs = [
                     Document(
@@ -1962,6 +1963,9 @@ async def process_file(
                 text_content = ' '.join([doc.page_content for doc in docs])
 
             log.debug('text_content: %s', text_content)
+            if form_data.extract_only and not text_content.strip():
+                raise ValueError('No text content could be extracted from the attachment')
+
             await Files.update_file_data_by_id(
                 file.id,
                 {'content': text_content},
@@ -1969,6 +1973,17 @@ async def process_file(
             )
             hash = calculate_sha256_string(text_content)
 
+            if form_data.extract_only:
+                await Files.update_file_data_by_id(file.id, {'status': 'completed'}, db=db)
+                await Files.update_file_hash_by_id(file.id, hash, db=db)
+                return {
+                    'status': True,
+                    'collection_name': None,
+                    'filename': file.filename,
+                    'content': text_content,
+                }
+
+            config = await get_retrieval_config()
             if config.BYPASS_EMBEDDING_AND_RETRIEVAL:
                 await Files.update_file_data_by_id(file.id, {'status': 'completed'}, db=db)
                 await Files.update_file_hash_by_id(file.id, hash, db=db)

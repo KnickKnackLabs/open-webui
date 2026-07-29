@@ -120,6 +120,7 @@
 	// Attach a terminal file to the chat input
 	const handleTerminalAttach = async (blob: Blob, name: string, contentType: string) => {
 		const tempItemId = uuidv4();
+		const directAttachment = !contentType.startsWith('image/') && !contentType.startsWith('video/');
 		const fileItem = {
 			type: 'file',
 			file: '',
@@ -130,15 +131,21 @@
 			status: 'uploading',
 			error: '',
 			itemId: tempItemId,
-			size: blob.size
+			size: blob.size,
+			...(directAttachment ? { purpose: 'chat_attachment' } : {})
 		};
 
 		files = [...files, fileItem];
 
 		try {
 			const file = new File([blob], name, { type: contentType || 'application/octet-stream' });
-			const uploaded = await uploadFile(localStorage.token, file);
+			const uploaded = await uploadFile(
+				localStorage.token,
+				file,
+				directAttachment ? { purpose: 'chat_attachment' } : null
+			);
 			if (!uploaded) throw new Error('Upload failed');
+			if (directAttachment && uploaded.error) throw new Error(uploaded.error);
 
 			const idx = files.findIndex((f) => f.itemId === tempItemId);
 			if (idx !== -1) {
