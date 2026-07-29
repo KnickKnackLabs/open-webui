@@ -260,6 +260,7 @@ RETRIEVAL_CONFIG_KEYS = {
     'BRAVE_SEARCH_API_KEY': 'web.search.brave_search_api_key',
     'BRAVE_SEARCH_CONTEXT_TOKENS': 'web.search.brave_search_context_tokens',
     'BYPASS_EMBEDDING_AND_RETRIEVAL': 'rag.bypass_embedding_and_retrieval',
+    'BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE': ('rag.bypass_embedding_and_retrieval_context_per_message'),
     'BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL': 'web.search.bypass_embedding_and_retrieval',
     'BYPASS_WEB_SEARCH_WEB_LOADER': 'web.search.bypass_web_loader',
     'CHUNK_MIN_SIZE_TARGET': 'rag.chunk_min_size_target',
@@ -622,6 +623,9 @@ async def get_rag_config(request: Request, user=Depends(get_admin_user)):
         'RAG_TEMPLATE': config.RAG_TEMPLATE,
         'TOP_K': config.TOP_K,
         'BYPASS_EMBEDDING_AND_RETRIEVAL': config.BYPASS_EMBEDDING_AND_RETRIEVAL,
+        'BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE': (
+            config.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE
+        ),
         'RAG_FULL_CONTEXT': config.RAG_FULL_CONTEXT,
         # Hybrid search settings
         'ENABLE_RAG_HYBRID_SEARCH': config.ENABLE_RAG_HYBRID_SEARCH,
@@ -852,6 +856,7 @@ class ConfigForm(BaseModel):
     RAG_TEMPLATE: str | None = None
     TOP_K: int | None = None
     BYPASS_EMBEDDING_AND_RETRIEVAL: bool | None = None
+    BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE: bool | None = None
     RAG_FULL_CONTEXT: bool | None = None
 
     # Hybrid search settings
@@ -945,6 +950,11 @@ async def update_rag_config(request: Request, form_data: ConfigForm, user=Depend
         form_data.BYPASS_EMBEDDING_AND_RETRIEVAL
         if form_data.BYPASS_EMBEDDING_AND_RETRIEVAL is not None
         else config.BYPASS_EMBEDDING_AND_RETRIEVAL
+    )
+    config.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE = (
+        form_data.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE
+        if form_data.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE is not None
+        else config.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE
     )
     config.RAG_FULL_CONTEXT = (
         form_data.RAG_FULL_CONTEXT if form_data.RAG_FULL_CONTEXT is not None else config.RAG_FULL_CONTEXT
@@ -1333,6 +1343,9 @@ async def update_rag_config(request: Request, form_data: ConfigForm, user=Depend
         'RAG_TEMPLATE': config.RAG_TEMPLATE,
         'TOP_K': config.TOP_K,
         'BYPASS_EMBEDDING_AND_RETRIEVAL': config.BYPASS_EMBEDDING_AND_RETRIEVAL,
+        'BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE': (
+            config.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE
+        ),
         'RAG_FULL_CONTEXT': config.RAG_FULL_CONTEXT,
         # Hybrid search settings
         'ENABLE_RAG_HYBRID_SEARCH': config.ENABLE_RAG_HYBRID_SEARCH,

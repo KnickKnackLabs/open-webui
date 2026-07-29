@@ -947,6 +947,9 @@ PADDLEOCR_VL_BASE_URL = os.getenv('PADDLEOCR_VL_BASE_URL', 'http://localhost:808
 PADDLEOCR_VL_TOKEN = os.getenv('PADDLEOCR_VL_TOKEN', '')
 
 BYPASS_EMBEDDING_AND_RETRIEVAL = os.getenv('BYPASS_EMBEDDING_AND_RETRIEVAL', 'False').lower() == 'true'
+BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE = (
+    os.getenv('BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE', 'True').lower() == 'true'
+)
 
 
 RAG_TOP_K = int(os.getenv('RAG_TOP_K', '3'))
@@ -2860,6 +2863,7 @@ DEFAULT_CONFIG = {
     'rag.paddleocr_vl_base_url': PADDLEOCR_VL_BASE_URL,
     'rag.paddleocr_vl_token': PADDLEOCR_VL_TOKEN,
     'rag.bypass_embedding_and_retrieval': BYPASS_EMBEDDING_AND_RETRIEVAL,
+    'rag.bypass_embedding_and_retrieval_context_per_message': (BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE),
     'rag.top_k': RAG_TOP_K,
     'rag.top_k_reranker': RAG_TOP_K_RERANKER,
     'rag.relevance_threshold': RAG_RELEVANCE_THRESHOLD,
