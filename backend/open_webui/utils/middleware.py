@@ -86,6 +86,7 @@ from open_webui.utils.context_compaction import compact_messages_for_request
 from open_webui.utils.direct_attachments import (
     collect_direct_attachment_contexts,
     hydrate_direct_attachments,
+    is_direct_attachment,
 )
 from open_webui.utils.files import (
     convert_markdown_base64_images,
@@ -1610,7 +1611,7 @@ async def add_file_context(messages: list, chat_id: str, user) -> list:
         files_with_urls = [
             file
             for file in stored_message.get('files', [])
-            if file.get('url') and not file.get('url').startswith('data:')
+            if (file.get('url') and not file.get('url').startswith('data:') and not is_direct_attachment(file))
         ]
         if not files_with_urls:
             continue

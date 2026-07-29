@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from open_webui.utils import direct_attachments
+from open_webui.utils import direct_attachments, middleware
 from open_webui.utils.direct_attachments import (
     DIRECT_ATTACHMENT_PURPOSE,
     clear_direct_attachment_contexts,
@@ -228,3 +228,62 @@ async def test_skips_inaccessible_failed_and_missing_content(monkeypatch):
     )
 
     assert messages == [{'role': 'user', 'content': 'Prompt'}]
+
+
+@pytest.mark.asyncio
+async def test_native_file_context_does_not_duplicate_direct_attachments(monkeypatch):
+    direct = direct_file(url='file-one')
+    knowledge = {
+        'type': 'file',
+        'id': 'knowledge-file',
+        'url': 'knowledge-file',
+        'name': 'knowledge.txt',
+    }
+    stored_user = {
+        'id': 'user-one',
+        'parentId': None,
+        'childrenIds': ['assistant-one'],
+        'role': 'user',
+        'content': 'Read both',
+        'files': [direct, knowledge],
+    }
+    stored_assistant = {
+        'id': 'assistant-one',
+        'parentId': 'user-one',
+        'childrenIds': [],
+        'role': 'assistant',
+        'content': 'Answer',
+    }
+    chat = SimpleNamespace(
+        chat={
+            'history': {
+                'currentId': 'assistant-one',
+                'messages': {
+                    'user-one': stored_user,
+                    'assistant-one': stored_assistant,
+                },
+            }
+        }
+    )
+    monkeypatch.setattr(middleware.Chats, 'get_chat_by_id_and_user_id', AsyncMock(return_value=chat))
+
+    messages = [
+        {
+            'role': 'user',
+            'content': (
+                'Read both\n\n<attached_files>\n'
+                '<attached_file name="notes.txt">\ndirect body\n</attached_file>\n'
+                '</attached_files>'
+            ),
+        }
+    ]
+
+    result = await middleware.add_file_context(
+        messages,
+        'chat-one',
+        SimpleNamespace(id='user-one', role='user'),
+    )
+
+    assert '<file type="file" id="knowledge-file" url="knowledge-file" name="knowledge.txt"/>' in result[0]['content']
+    assert '<file type="file" id="file-one"' not in result[0]['content']
+    assert result[0]['content'].count('notes.txt') == 1
