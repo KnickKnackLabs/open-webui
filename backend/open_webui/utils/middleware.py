@@ -96,6 +96,14 @@ from open_webui.utils.filter import (
 )
 
 from open_webui.utils.json_codec import JSONCodec
+from open_webui.utils.message_file_context import (
+    bind_message_file_contexts,
+    collect_message_file_contexts,
+    exclude_message_scoped_files,
+    get_user_messages,
+    merge_message_file_contexts,
+    restore_user_message_contents,
+)
 from open_webui.utils.mcp.client import MCPClient
 from open_webui.utils.memory import add_memory_context, review_memory_after_turn
 from open_webui.utils.misc import (
@@ -118,6 +126,7 @@ from open_webui.utils.misc import (
     replace_system_message_content,
     set_last_user_message_content,
     strip_empty_content_blocks,
+    update_message_content,
 )
 from open_webui.utils.payload import apply_system_prompt_to_body, resolve_system_prompt
 from open_webui.utils.plugin import load_function_module_by_id
@@ -866,6 +875,33 @@ async def apply_source_context_to_messages(
             messages,
             append=False,
         )
+
+
+async def apply_message_source_contexts_to_messages(
+    request: Request,
+    messages: list[dict],
+    message_sources: list[dict],
+) -> list[dict]:
+    user_messages = get_user_messages(messages)
+    source_ids = {}
+    template = await Config.get('rag.template')
+
+    for message_source in message_sources or []:
+        sources = message_source.get('sources') or []
+        user_message_index = message_source.get('user_message_index')
+        if not sources or not isinstance(user_message_index, int) or not 0 <= user_message_index < len(user_messages):
+            continue
+
+        context = get_source_context(sources, source_ids=source_ids).strip()
+        if not context:
+            continue
+
+        user_message = user_messages[user_message_index]
+        user_message_text = get_content_from_message(user_message) or message_source.get('content') or ''
+        rag_content = await rag_template(template, context, user_message_text)
+        update_message_content(user_message, rag_content, append=False)
+
+    return messages
 
 
 async def process_tool_result(
@@ -1829,13 +1865,34 @@ async def chat_completion_files_handler(
 ) -> tuple[dict, dict[str, list]]:
     __event_emitter__ = extra_params['__event_emitter__']
     sources = []
+    message_sources = []
+    global_sources = []
 
-    if files := body.get('metadata', {}).get('files', None):
-        # Check if all files are in full context mode
-        all_full_context = all(item.get('context') == 'full' for item in files)
+    metadata = body.get('metadata', {})
+    files = metadata.get('files') or []
+    message_file_contexts = metadata.get('message_file_contexts') or []
 
+    if files or message_file_contexts:
+        rag_config = await Config.get_many(
+            'rag.bypass_embedding_and_retrieval',
+            'rag.bypass_embedding_and_retrieval_context_per_message',
+            'rag.top_k',
+            'rag.top_k_reranker',
+            'rag.relevance_threshold',
+            'rag.hybrid_bm25_weight',
+            'rag.enable_hybrid_search',
+            'rag.full_context',
+        )
+        message_scoped_context = bool(
+            rag_config.get('rag.bypass_embedding_and_retrieval')
+            and rag_config.get('rag.bypass_embedding_and_retrieval_context_per_message')
+            and message_file_contexts
+        )
+        global_files = exclude_message_scoped_files(files, message_file_contexts) if message_scoped_context else files
+
+        all_full_context = bool(global_files) and all(item.get('context') == 'full' for item in global_files)
         queries = []
-        if not all_full_context:
+        if global_files and not all_full_context and not rag_config.get('rag.bypass_embedding_and_retrieval'):
             try:
                 queries_response = await generate_queries(
                     request,
@@ -1843,7 +1900,7 @@ async def chat_completion_files_handler(
                         'model': body['model'],
                         'messages': body['messages'],
                         'type': 'retrieval',
-                        'chat_id': body.get('metadata', {}).get('chat_id'),
+                        'chat_id': metadata.get('chat_id'),
                     },
                     user,
                 )
@@ -1858,7 +1915,7 @@ async def chat_completion_files_handler(
 
                     queries_response = queries_response[bracket_start:bracket_end]
                     queries_response = JSONCodec.loads(queries_response)
-                except Exception as e:
+                except Exception:
                     queries_response = {'queries': [queries_response]}
 
                 queries = queries_response.get('queries', [])
@@ -1876,48 +1933,69 @@ async def chat_completion_files_handler(
                 }
             )
 
-        if len(queries) == 0:
+        if not queries:
             queries = [get_last_user_message(body['messages']) or '']
 
-        try:
-            # One batched SELECT instead of six sequential round trips.
-            rag_config = await Config.get_many(
-                'rag.top_k',
-                'rag.top_k_reranker',
-                'rag.relevance_threshold',
-                'rag.hybrid_bm25_weight',
-                'rag.enable_hybrid_search',
-                'rag.full_context',
-            )
-            # Directly await async get_sources_from_items (no thread needed - fully async now)
-            sources = await get_sources_from_items(
-                request=request,
-                items=files,
-                queries=queries,
-                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
-                    query, prefix=prefix, user=user
-                ),
-                k=rag_config.get('rag.top_k'),
-                reranking_function=(
-                    (lambda query, documents: request.app.state.RERANKING_FUNCTION(query, documents, user=user))
-                    if request.app.state.RERANKING_FUNCTION
-                    else None
-                ),
-                k_reranker=rag_config.get('rag.top_k_reranker'),
-                r=rag_config.get('rag.relevance_threshold'),
-                hybrid_bm25_weight=rag_config.get('rag.hybrid_bm25_weight'),
-                hybrid_search=rag_config.get('rag.enable_hybrid_search'),
+        async def get_sources(items: list[dict], item_queries: list[str], full_context: bool = False) -> list:
+            try:
+                return await get_sources_from_items(
+                    request=request,
+                    items=items,
+                    queries=item_queries,
+                    embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                        query, prefix=prefix, user=user
+                    ),
+                    k=rag_config.get('rag.top_k'),
+                    reranking_function=(
+                        (lambda query, documents: request.app.state.RERANKING_FUNCTION(query, documents, user=user))
+                        if request.app.state.RERANKING_FUNCTION
+                        else None
+                    ),
+                    k_reranker=rag_config.get('rag.top_k_reranker'),
+                    r=rag_config.get('rag.relevance_threshold'),
+                    hybrid_bm25_weight=rag_config.get('rag.hybrid_bm25_weight'),
+                    hybrid_search=rag_config.get('rag.enable_hybrid_search'),
+                    full_context=full_context,
+                    user=user,
+                )
+            except Exception as e:
+                log.exception(e)
+                return []
+
+        if message_scoped_context:
+            for message_file_context in message_file_contexts:
+                if not isinstance(message_file_context.get('user_message_index'), int):
+                    continue
+
+                message_content = get_content_from_message({'content': message_file_context.get('content', '')})
+                scoped_sources = await get_sources(
+                    message_file_context.get('files', []),
+                    [message_content or queries[0]],
+                    full_context=True,
+                )
+                if scoped_sources:
+                    message_sources.append(
+                        {
+                            'user_message_index': message_file_context.get('user_message_index'),
+                            'content': message_content,
+                            'sources': scoped_sources,
+                        }
+                    )
+                    sources.extend(scoped_sources)
+
+        if global_files:
+            global_sources = await get_sources(
+                global_files,
+                queries,
                 full_context=all_full_context or rag_config.get('rag.full_context'),
-                user=user,
             )
-        except Exception as e:
-            log.exception(e)
+            sources.extend(global_sources)
 
         log.debug(f'rag_contexts:sources: {sources}')
 
         unique_ids = set()
-        for source in sources or []:
-            if not source or len(source.keys()) == 0:
+        for source in sources:
+            if not source:
                 continue
 
             documents = source.get('document') or []
@@ -1925,23 +2003,26 @@ async def chat_completion_files_handler(
             src_info = source.get('source') or {}
 
             for index, _ in enumerate(documents):
-                metadata = metadatas[index] if index < len(metadatas) else None
-                _id = (metadata or {}).get('source') or (src_info or {}).get('id') or 'N/A'
-                unique_ids.add(_id)
+                source_metadata = metadatas[index] if index < len(metadatas) else None
+                source_id = (source_metadata or {}).get('source') or src_info.get('id') or 'N/A'
+                unique_ids.add(source_id)
 
-        sources_count = len(unique_ids)
         await __event_emitter__(
             {
                 'type': 'status',
                 'data': {
                     'action': 'sources_retrieved',
-                    'count': sources_count,
+                    'count': len(unique_ids),
                     'done': True,
                 },
             }
         )
 
-    return body, {'sources': sources}
+    return body, {
+        'sources': sources,
+        'message_sources': message_sources,
+        'global_sources': global_sources,
+    }
 
 
 def apply_params_to_form_data(form_data, model):
@@ -2296,6 +2377,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # which the frontend strips, causing tool calls to be merged into content.
     chat_id = metadata.get('chat_id')
     user_message_id = metadata.get('user_message_id')
+    current_user_message = metadata.get('user_message')
+    request_message_contexts = collect_message_file_contexts(form_data.get('messages', []))
+    current_user_contexts = collect_message_file_contexts(
+        [current_user_message] if isinstance(current_user_message, dict) else []
+    )
+    message_file_contexts = merge_message_file_contexts(request_message_contexts, current_user_contexts)
 
     if is_saved_chat_id(chat_id) and user_message_id:
         db_messages = await load_messages_from_db(chat_id, user_message_id)
@@ -2316,6 +2403,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
             system_message = get_system_message(form_data.get('messages', []))
             form_data['messages'] = [system_message, *db_messages] if system_message else db_messages
+            db_message_contexts = collect_message_file_contexts(form_data['messages'])
+            message_file_contexts = merge_message_file_contexts(message_file_contexts, db_message_contexts)
 
             # Inject image files into content as image_url parts (mirrors frontend logic)
             for message in form_data['messages']:
@@ -2427,6 +2516,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     events = []
     sources = []
+    prompt_sources = []
+    message_sources = []
 
     # Folder "Project" handling
     # Check if the request has chat_id and is inside of a folder
@@ -2598,6 +2689,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     tool_ids = form_data.pop('tool_ids', None)
     terminal_id = form_data.pop('terminal_id', None)
     files = form_data.pop('files', None)
+    if files is None:
+        message_file_contexts = []
     form_data.pop('folder_id', None)
 
     # If the original caller provided tools, use them as-is (skip resolution).
@@ -2683,6 +2776,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Strip <$skillId|label> mention tags so the model doesn't see raw markup.
     strip_skill_mentions(form_data.get('messages', []))
+
+    message_file_contexts = bind_message_file_contexts(message_file_contexts, form_data['messages'])
+    metadata['message_file_contexts'] = message_file_contexts
 
     prompt = get_last_user_message(form_data['messages'])
 
@@ -2917,7 +3013,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     form_data, flags = await chat_completion_tools_handler(
                         request, form_data, extra_params, user, models, tools_dict
                     )
-                    sources.extend(flags.get('sources', []))
+                    tool_sources = flags.get('sources', [])
+                    sources.extend(tool_sources)
+                    prompt_sources.extend(tool_sources)
                 except Exception as e:
                     log.exception(e)
 
@@ -2927,7 +3025,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if file_context_enabled:
         try:
             form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
-            sources.extend(flags.get('sources', []))
+            file_sources = flags.get('sources', [])
+            file_message_sources = flags.get('message_sources', [])
+            sources.extend(file_sources)
+            message_sources.extend(file_message_sources)
+            prompt_sources.extend(flags.get('global_sources', []) if file_message_sources else file_sources)
         except Exception as e:
             log.exception(e)
 
@@ -2947,11 +3049,26 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         )
     metadata['system_prompt'] = system_content or None
     metadata['user_prompt'] = get_last_user_message(form_data['messages'])
-    metadata['sources'] = sources[:] if sources else []
+    metadata['user_message_contents'] = [
+        copy.deepcopy(message.get('content')) for message in get_user_messages(form_data['messages'])
+    ]
+    metadata['sources'] = prompt_sources[:] if prompt_sources else []
+    metadata['message_sources'] = message_sources[:] if message_sources else []
 
-    # If context is not empty, insert it into the messages
-    if sources and prompt:
-        form_data['messages'] = await apply_source_context_to_messages(request, form_data['messages'], sources, prompt)
+    if message_sources:
+        form_data['messages'] = await apply_message_source_contexts_to_messages(
+            request,
+            form_data['messages'],
+            message_sources,
+        )
+
+    if prompt_sources and prompt:
+        form_data['messages'] = await apply_source_context_to_messages(
+            request,
+            form_data['messages'],
+            prompt_sources,
+            prompt,
+        )
 
     # If there are citations, add them to the data_items
     sources = [
@@ -5149,11 +5266,19 @@ async def streaming_chat_response_handler(response, ctx):
                         if all_tool_call_sources and user_message:
                             # Restore pre-RAG message state before re-applying
                             # to prevent RAG template duplication.
-                            original_user_message = metadata.get('user_prompt') or user_message
-                            set_last_user_message_content(
-                                original_user_message,
-                                form_data['messages'],
-                            )
+                            message_scoped_sources = metadata.get('message_sources') or []
+                            if message_scoped_sources:
+                                restore_user_message_contents(
+                                    form_data['messages'],
+                                    metadata.get('user_message_contents', []),
+                                )
+                            else:
+                                original_user_message = metadata.get('user_prompt') or user_message
+                                set_last_user_message_content(
+                                    original_user_message,
+                                    form_data['messages'],
+                                )
+
                             if original_system_content is not None:
                                 if get_system_message(form_data['messages']):
                                     replace_system_message_content(
@@ -5167,6 +5292,13 @@ async def streaming_chat_response_handler(response, ctx):
                                     )
                             else:
                                 replace_system_message_content('', form_data['messages'])
+
+                            if message_scoped_sources:
+                                form_data['messages'] = await apply_message_source_contexts_to_messages(
+                                    request,
+                                    form_data['messages'],
+                                    message_scoped_sources,
+                                )
 
                             # Build context: file sources with content,
                             # tool sources as citation markers only.

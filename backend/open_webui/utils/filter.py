@@ -3,6 +3,7 @@ import logging
 
 from open_webui.env import ENABLE_PLUGINS
 from open_webui.models.functions import Functions
+from open_webui.utils.message_file_context import clear_file_context_payload
 from open_webui.utils.plugin import get_function_module_from_cache
 
 log = logging.getLogger(__name__)
@@ -227,9 +228,6 @@ async def process_filter_functions(
 
     # Handle file cleanup for inlet
     if skip_files:
-        if 'files' in form_data.get('metadata', {}):
-            del form_data['metadata']['files']
-        if 'files' in form_data:
-            del form_data['files']
+        clear_file_context_payload(form_data)
 
     return form_data, {}

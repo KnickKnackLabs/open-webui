@@ -338,6 +338,8 @@
 			config?.CONTENT_EXTRACTION_SUPPORTED_MEDIA_MIME_TYPES ?? []
 		).join(', ');
 		config.RAG_TOKENIZER_MODEL = config?.RAG_TOKENIZER_MODEL ?? '';
+		config.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE =
+			config?.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE ?? true;
 
 		RAGConfig = config;
 	});
@@ -859,6 +861,21 @@
 						ariaLabelledbyId={labelId}
 					/>
 				</AdminSettingRow>
+
+				{#if RAGConfig.BYPASS_EMBEDDING_AND_RETRIEVAL}
+					<AdminSettingRow
+						label={$i18n.t('Scope Document Context by Message')}
+						description={RAGConfig.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE
+							? $i18n.t('Keep each document attached to the user message where it was uploaded.')
+							: $i18n.t('Inject all attached documents into the latest user message.')}
+						let:labelId
+					>
+						<Switch
+							bind:state={RAGConfig.BYPASS_EMBEDDING_AND_RETRIEVAL_CONTEXT_PER_MESSAGE}
+							ariaLabelledbyId={labelId}
+						/>
+					</AdminSettingRow>
+				{/if}
 
 				{#if !RAGConfig.BYPASS_EMBEDDING_AND_RETRIEVAL}
 					<AdminSettingRow
